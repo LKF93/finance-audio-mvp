@@ -1,84 +1,115 @@
 import streamlit as st
 from datetime import datetime
-import io # MODULE NEEDED: Allows us to treat raw bytes like a file in memory
+import io 
 from logic import get_financial_data, generate_psychological_script, text_to_speech
 
-st.title("Finance Audio Report")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="AI Finans Raporu", page_icon="📈")
 
-# --- SESSION STATE (The App's Memory) ---
-# Keeps data alive when you click buttons (otherwise Streamlit resets)
+st.title("🎙️ AI Finansal Sesli Rapor")
+st.caption("Gerçek zamanlı borsa verileri ve yapay zeka analizleri")
+
+# --- SESSION STATE (Memory) ---
 if "full_script" not in st.session_state:
     st.session_state.full_script = None
 if "audio_bytes" not in st.session_state:
     st.session_state.audio_bytes = None
 
-tickers = st.multiselect(
-    "Select your portfolio:",
-    ["NVDA", "VWCE.DE", "GDX", "IE00B4NCWG09", "TSLA", "AAPL", "MSFT"],
-    default=["NVDA"]
+# --- SIDEBAR SETTINGS ---
+with st.sidebar:
+    st.header("⚙️ Ayarlar")
+    
+    # 1. SPEED SLIDER (Hız Ayarı)
+    # Intuition: We pass this value directly to the text_to_speech function
+    speed_selection = st.select_slider(
+        "Ses Okuma Hızı (Speed):",
+        options=[0.5, 0.8, 1.0, 1.2, 1.5, 2.0],
+        value=1.0, # Default is slightly faster for professional feel
+        help="1.0 normal hızdır."
+    )
+    
+    st.divider()
+    
+    # 2. CONTENT STYLE (İçerik Stili)
+    focus_selection = st.radio(
+        "Rapor Türü Seçin:",
+        ["Genel Özet", "Teknik Analiz", "Piyasa Duyarlılığı (Haber Odaklı)"],
+        index=0
+    )
+    
+    # 3. TIMEFRAME (Zaman Dilimi)
+    time_focus = st.select_slider(
+        "Zaman Odağı:",
+        options=["1 Gün", "1 Hafta", "1 Ay", "1 Yıl"],
+        value="1 Ay"
+    )
+
+# --- MAIN INTERFACE ---
+
+# ANY TICKER INPUT
+# Logic: Users can type KCHOL.IS, THYAO.IS, AAPL etc.
+ticker_input = st.text_input(
+    "Takip Etmek İstediğiniz Hisseleri Girin (Virgül ile ayırın):",
+    value="KCHOL.IS, THYAO.IS, TSLA",
+    help="Örnek: KCHOL.IS (Koç Holding), BTC-USD (Bitcoin), AAPL (Apple)"
 )
 
-# Choosing audio options
-focus_selection = st.radio(
-    "Choose your content:",
-    ["Overall Information", "Technical Report", "Sentimental Report"],
-    index = 0, # Setting default option to Overall Information
-    horizontal = True # Buttons are next to each other
-)
+# Convert input string to a clean list
+tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
 
-# Choosing timeline options
-time_focus = st.select_slider(
-    "Choose a timeframe:",
-    options = ["1 Day", "1 Week", "1 Month", "1 Year"],
-    value="1 Month" # Default value
-)
+if st.button("🚀 Raporu Oluştur (Generate)"):
+    if not tickers:
+        st.error("Lütfen en az bir sembol girin.")
+    else:
+        with st.spinner("🔍 Veriler analiz ediliyor ve ses dosyası hazırlanıyor..."):
+            combined_script = ""
+            
+            # Loop through the dynamic ticker list
+            for ticker in tickers:
+                st.write(f"⏳ {ticker} verileri işleniyor...")
+                data = get_financial_data(ticker)
+                if data:
+                    # Generate text using Gemini
+                    script = generate_psychological_script(data, focus_selection, time_focus)
+                    combined_script += f"{ticker} analizi. {script}\n\n"
+                else:
+                    st.warning(f"'{ticker}' için veri bulunamadı. Lütfen sembolü kontrol edin.")
 
-if st.button("Generate My Briefing"):
-    with st.spinner("🔍 Deep-diving into market data and generating audio..."):
-        temp_script = ""
-        
-        # Loop through selected stocks
-        for ticker in tickers:
-            data = get_financial_data(ticker)
-            if data:
-                script = generate_psychological_script(data, focus_selection, time_focus)
-                temp_script += f"Analysis for {ticker}. {script}\n\n"
-        
-        if temp_script:
-            st.session_state.full_script = temp_script
-            # Generate audio only once for the combined text
-            st.session_state.audio_bytes = text_to_speech(temp_script)
-        else:
-            st.error("No data found for selected tickers.")
+            if combined_script:
+                st.session_state.full_script = combined_script
+                # Generate audio with the selected speed
+                st.session_state.audio_bytes = text_to_speech(combined_script, speed=speed_selection)
+            else:
+                st.error("Hiçbir geçerli veri işlenemedi.")
 
-# --- DISPLAY SECTION ---
+# --- DISPLAY & DOWNLOAD SECTION ---
 if st.session_state.audio_bytes and st.session_state.full_script:
     
-    st.subheader("🎧 Your Audio Report")
+    st.success("✅ Raporunuz Hazır!")
     
-    # FIX: We use for audio the official MIME-type: 'audio/mpeg'
+    st.subheader("🎧 Sesli Raporu Dinle")
+    # Using io.BytesIO to handle the raw audio data in memory
     st.audio(io.BytesIO(st.session_state.audio_bytes), format='audio/mpeg')
 
-    # Optional: Dynamischer Dateiname (wie vorhin besprochen)
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    filename_base = f"Briefing_{today_str}"
+    # Filename with current date
+    today_str = datetime.now().strftime("%d-%m-%Y")
     
     col1, col2 = st.columns(2)
     with col1:
         st.download_button(
-            label="📥 Download Audio (MP3)",
-            data=st.session_state.audio_bytes, # Download button handles raw bytes fine
-            file_name="morning_briefing.mp3",
-            mime="audio/mpeg" # Also change here to mpeg
+            label="📥 Ses Dosyasını İndir (MP3)",
+            data=st.session_state.audio_bytes,
+            file_name=f"finans_raporu_{today_str}.mp3",
+            mime="audio/mpeg"
         )
     with col2:
         st.download_button(
-            label="📄 Download Script (TXT)",
+            label="📄 Metni İndir (TXT)",
             data=st.session_state.full_script,
-            file_name="morning_briefing.txt",
+            file_name=f"finans_metni_{today_str}.txt",
             mime="text/plain"
         )
     
-    # We display the text below
-    with st.expander("Read Analyst Script"):
-        st.write(st.session_state.full_script) # st.write is safer than st.markdown for plain text
+    # Expandable section for the text script
+    with st.expander("📝 Analiz Metnini Oku"):
+        st.write(st.session_state.full_script)

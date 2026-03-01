@@ -8,25 +8,29 @@ from dotenv import load_dotenv
 # 1. Load Keys & Config
 load_dotenv()
 
+# Initialize Gemini Client
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Google Cloud Auth
+# Google Cloud Auth for Text-to-Speech
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_credentials.json"
 tts_client = texttospeech.TextToSpeechClient()
 
 def format_large_number(num):
-    """Turns for example 4865000000 into -> 4.87 Billion"""
+    """
+    Converts raw numbers into Turkish financial terms (Milyon, Milyar, Trilyon).
+    Ensures the AI reads the scale correctly.
+    """
     if num is None or num == 'N/A':
         return "N/A"
     
     try:
         num = float(num)
         if num >= 1_000_000_000_000:
-            return f"{num / 1_000_000_000_000:.2f} Trillion"
+            return f"{num / 1_000_000_000_000:.2f} Trilyon"
         elif num >= 1_000_000_000:
-            return f"{num / 1_000_000_000:.2f} Billion"
+            return f"{num / 1_000_000_000:.2f} Milyar"
         elif num >= 1_000_000:
-            return f"{num / 1_000_000:.2f} Million"
+            return f"{num / 1_000_000:.2f} Milyon"
         else:
             return f"{num:.2f}"
     except:
@@ -34,14 +38,20 @@ def format_large_number(num):
 
 def get_financial_data(ticker_symbol):
     """
-    Gets historical financial data (1 week, 1 month, 1 year).
+    Fetches data for ANY ticker from Yahoo Finance.
+    Localized for Turkish currency (TRY) and Borsa Istanbul (.IS).
     """
-    print(f"🔍 Researching {ticker_symbol}...") 
+    print(f"🔍 Researching: {ticker_symbol}...") 
     stock = yf.Ticker(ticker_symbol)
     
-    # Make currency readable
-    currency_raw = stock.info.get('currency', 'USD')
-    currency_spoken = "US Dollars" if currency_raw == "USD" else currency_raw 
+    # Handle Currency localization
+    currency_raw = stock.info.get('currency', 'TRY')
+    if currency_raw == "USD": 
+        currency_spoken = "Amerikan Doları"
+    elif currency_raw == "TRY": 
+        currency_spoken = "Türk Lirası"
+    else: 
+        currency_spoken = currency_raw 
 
     try:
         hist = stock.history(period="1y")
@@ -60,238 +70,136 @@ def get_financial_data(ticker_symbol):
         price_1m, chg_1m = get_change(20)
         price_1y, chg_1y = get_change(250)
         
-    except:
+    except Exception as e:
+        print(f"Data Fetch Error: {e}")
         return None
 
     info = stock.info
-        
-    # Formatting numbers for the LLM
     market_cap_clean = format_large_number(info.get('marketCap', 0))
-    pe_ratio_clean = info.get('trailingPE', 'N/A')
     
-    # PE Ratio runden, falls es eine Zahl ist
-    if pe_ratio_clean != 'N/A':
-        try:
-            pe_ratio_clean = f"{float(pe_ratio_clean):.2f}"
-        except:
-            pass
-
-    # Basic data and financial ratios
-    fundamentals = {
-        "Summary": info.get('longBusinessSummary', 'N/A')[:500],
-        "PE Ratio": info.get('trailingPE', 'N/A'),
-        "Market Cap": info.get('marketCap', 'N/A'),
-        "52W High": info.get('fiftyTwoWeekHigh', 'N/A'),
-        "52W Low": info.get('fiftyTwoWeekLow', 'N/A'),
-    }
-
-   # Wir lassen yfinance News weg, wir nutzen Google Search wenn nötig
-    news = "News will be fetched via Google Search if required."
-
-    # Data package for the prompt
+    # Data package formatted for the Turkish Prompt
     return f"""
     ASSET: {ticker_symbol}
-    CURRENCY_SPOKEN: {currency_spoken}
+    CURRENCY: {currency_spoken}
     
     [PRICE DATA]
     Current Price: {current_price:.2f} {currency_spoken}
-    1-Week Change: {chg_1w:.2f}%
-    1-Month Change: {chg_1m:.2f}% (Was: {price_1m:.2f})
-    1-Year Change: {chg_1y:.2f}% (Was: {price_1y:.2f})
+    1-Week Change: %{chg_1w:.2f}
+    1-Month Change: %{chg_1m:.2f} (Previous: {price_1m:.2f})
+    1-Year Change: %{chg_1y:.2f} (Previous: {price_1y:.2f})
     
-    [KEY METRICS]
-    Market Cap: {fundamentals['Market Cap']} {currency_spoken}
-    P/E Ratio: {fundamentals['PE Ratio']}
-    
-    [NEWS]
-    {news}
+    [METRICS]
+    Market Cap: {market_cap_clean}
+    P/E Ratio: {info.get('trailingPE', 'N/A')}
     """
 
 def generate_psychological_script(data_context, focus_style, time_focus):
-    
-    use_search = False # Default value, so choosing "Overall Information" does not crash
+    """
+    Generates the news script using Gemini. 
+    Localized for Turkish but instructed in English for maximum precision.
+    """
+    # 1. Determine if Google Search is needed
+    # We use search for Sentiment and Balanced to get the "Why"
+    use_search = True if ("Sentimental" in focus_style or "Genel" in focus_style or "Piyasa" in focus_style) else False
 
-    # ---------------------------------------------------------
-    # TEIL 1: DEIN AUSFÜHRLICHER SYSTEM PROMPT (Wiederhergestellt)
-    # ---------------------------------------------------------
+    # 2. CORE SYSTEM INSTRUCTIONS
     base_system_instructions = """
-    You are a professional, objective financial news anchor.
-    Your tone is calm, factual, and precise. 
+    You are a professional financial news anchor for a Turkish broadcast.
+    TONE: Calm, authoritative, and factual.
+    LANGUAGE: Write exclusively in TURKISH.
     
-    CRITICAL FORMATTING RULES (MUST FOLLOW):
-    1. Write in PLAIN TEXT only. NO markdown, NO bold (**), NO code blocks.
-    2. Numbers: Read Market Cap naturally (e.g., "4.5 Trillion"). DO NOT read full digits string.
-    3. Currency: Always say "US Dollars" or "Euros", never "USD".
-    4. Structure: Write in full, spoken paragraphs. No bullet points.
-
-    STYLE RULES:
-    - Use short, simple sentences. Perfect for audio reading.
-    - No emotional words (like "unfortunately", "skyrocketed").
-    - Do not say "Buy" or "Sell".
-    - Speak slowly and clearly (use punctuation to create pauses).
+    STRICT FORMATTING:
+    - PLAIN TEXT ONLY. No markdown (no **), no bold, no bullet points.
+    - Currency: Say 'Türk Lirası' or 'Amerikan Doları'.
+    - Numbers: Use 'Milyon' or 'Milyar'.
     """
 
-    # ---------------------------------------------------------
-    # TEIL 2: DEINE INHALTS-STRUKTUREN (Wiederhergestellt)
-    # ---------------------------------------------------------
+    # 3. DYNAMIC MISSION BRIEFING (The Heart of the Logic)
+    # We use specific prompts to force the 90/10 or 50/50 balance
     
     if "Technical" in focus_style:
-        mission_briefing = """
-        YOUR MISSION: CREATE A TECHNICAL ANALYSIS REPORT.
-        
-        STRUCTURE:
-        1. **Welcome**: Brief technical welcome ("Technical briefing for [Asset]").
-        2. **Price Action**: Focus heavily on exact price changes and percentages.
-        3. **Key Levels**: Mention 52-Week High/Low vs Current Price.
-        4. **Ratios**: Discuss P/E Ratio and Market Cap.
-        5. **Outlook**: Data-driven trend conclusion.
-        
-        NOTE: Ignore soft news headlines unless they explain a massive crash. Focus on math.
+        # 100% Data focused
+        mission = """
+        MISSION: TECHNICAL ANALYSIS REPORT.
+        - FOCUS: 100% on hard financial data and ratios.
+        - CONTENT: Discuss price ranges, 52-week highs/lows, P/E ratios, and percentage changes.
+        - STRUCTURE: Welcome -> Detailed Price Action -> Key Ratios -> Technical Outlook.
+        - INSTRUCTION: Be precise with every number provided in the Dossier.
         """
-        use_search = False
-        
-    elif "Sentimental" in focus_style:
-        # Hier habe ich nur EINE Zeile hinzugefügt: "USE GOOGLE SEARCH". 
-        # Sonst weiß dein alter Prompt nicht, dass er das neue Tool benutzen darf.
-        mission_briefing = """
-        YOUR MISSION: CREATE A MARKET SENTIMENT REPORT.
-        
-        CRITICAL INSTRUCTION: USE THE GOOGLE SEARCH TOOL to find the LATEST news (last 24-48h).
-        Do not rely on the provided data dossier for news.
-        
-        STRUCTURE:
-        1. **Welcome**: Brief sentiment welcome ("Market sentiment for [Asset]").
-        2. **The Story**: What is the breaking news found via Google Search? (e.g. Earnings, Politics, Product Launches).
-        3. **Context**: Explain company background and how news affects it.
-        4. **Price Reaction**: Briefly mention price reaction (up/down).
-        5. **Specific sector news**: Current sector news based on the company that are going on and are recent.
-        
-        NOTE: Minimize math. Focus on the "Why" and the narrative.
-        """
-        use_search = True
-        
-    else:
-        # Balanced / Default
-        mission_briefing = """
-        YOUR MISSION: CREATE A BALANCED DAILY BRIEFING.
-        
-        INSTRUCTION: Use Google Search to find 1 major headline to explain the price move.
-        
-        STRUCTURE:
-        1. **Welcome**: Standard welcome.
-        2. **Current Status**: Current price and context.
-        3. **The Big Picture**: Combine Technical Trend with Top News found via Search.
-        4. **Context**: Explain the movement briefly.
-        5. **Outlook**: Neutral summary.
-        
-        NOTE: Keep a 50/50 balance between price data and news context.
-        """
-
-        use_search = True
-    # ---------------------------------------------------------
-    # TEIL 3: DEINE ZEIT-STRUKTUREN (Wiederhergestellt)
-    # ---------------------------------------------------------
     
-    if time_focus == "1 Day":
-        time_instruction = """
-        TIME CONTEXT: IMMEDIATE SHORT-TERM (Last 24 Hours).
-        - Focus ONLY on the 'Current Price' and today's movement.
-        - Ignore long-term trends unless extreme.
-        - Discuss immediate reaction to latest news.
+    elif "Sentimental" in focus_style or "Piyasa" in focus_style:
+        # 90% Story/News, 10% Numbers
+        mission = """
+        MISSION: MARKET SENTIMENT STORY (NARRATIVE).
+        - FOCUS: 90% on NEWS and STORY, only 10% on numbers.
+        - SEARCH: Use Google Search to find the latest headlines/rumors.
+        - CONTENT: Explain WHY the stock is moving. What is the mood of the investors?
+        - NUMBER LIMIT: Mention the 'Current Price' ONLY ONCE. Ignore all other ratios (P/E, Market Cap) unless they are part of a news story.
+        - STRUCTURE: Breaking News Headline -> Narrative/Context -> Brief Price Anchor -> Outlook.
         """
-    elif time_focus == "1 Week":
-        time_instruction = """
-        TIME CONTEXT: WEEKLY WRAP-UP (Last 5 Days).
-        - Focus primarily on the '1-Week Change'.
-        - Summarize how the stock performed this week.
-        """
-    elif time_focus == "1 Month":
-        time_instruction = """
-        TIME CONTEXT: MONTHLY TREND.
-        - Focus on the '1-Month Change'. 
-        - Is the stock in an uptrend or downtrend over the last 30 days?
-        """
-    else: # 1 Year
-        time_instruction = """
-        TIME CONTEXT: LONG-TERM VIEW (Yearly Performance).
-        - Focus on the '1-Year Change' and the '52-Week Range'.
-        - Discuss the major trend of the year.
+    
+    else: # Balanced / Genel Özet
+        # 50/50 Balance
+        mission = """
+        MISSION: BALANCED DAILY BRIEFING.
+        - FOCUS: 50% Technical Data, 50% News Headlines.
+        - CONTENT: Connect the current price movement to 1 major news event found via Search.
+        - STRUCTURE: Welcome -> Price Update -> News Context -> Financial Summary.
+        - INSTRUCTION: Give the most important numbers (Price, 1-Month change) and the most important headline.
         """
 
-    # ---------------------------------------------------------
-    # TEIL 4: ZUSAMMENBAU
-    # ---------------------------------------------------------
+    # 4. CONSTRUCT FINAL PROMPT
     final_prompt = f"""
     {base_system_instructions}
+    {mission}
     
-    {mission_briefing}
-    
-    {time_instruction}
+    TIME CONTEXT: {time_focus}
     
     DATA DOSSIER:
     {data_context}
     
-    TASK: Write a 200-word audio script integrating ALL instructions above.
+    TASK: Write a 200-word professional Turkish audio script. Follow the FOCUS percentages strictly.
     """
     
     try:
-        # Tool Konfiguration (Neue Syntax)
-        if use_search:
-            tools_config = [types.Tool(google_search=types.GoogleSearch())]
-        else:
-            tools_config = None
-
-        # API Aufruf
+        # Using the Search Tool
+        tools_config = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
+        
         response = client.models.generate_content(
             model='gemini-3-flash-preview',
             contents=final_prompt,
             config=types.GenerateContentConfig(
-                temperature = 0.5,
-                tools=tools_config,
-                safety_settings=[
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_HARASSMENT',
-                        threshold='BLOCK_NONE'
-                    ),
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_HATE_SPEECH',
-                        threshold='BLOCK_NONE'
-                    ),
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_SEXUALLY_EXPLICIT',
-                        threshold='BLOCK_NONE'
-                    ),
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_DANGEROUS_CONTENT',
-                        threshold='BLOCK_NONE'
-                    )
-                ]
+                temperature=0.5,
+                tools=tools_config
             )
         )
-        
-        if response.text:
-            return response.text
-        return "Analysis unavailable."
-        
+        return response.text if response.text else "Analiz oluşturulamadı."
     except Exception as e:
-        print(f"Gemini Error: {e}")
-        return f"Error generating text: {e}"
+        return f"Gemini Error: {e}"
 
-def text_to_speech(script_text):
+def text_to_speech(script_text, speed=1.0):
+    """
+    Converts Turkish text to high-quality MP3 audio.
+    Supports dynamic speed (0.5 to 2.0).
+    """
     if not script_text or "Error" in script_text:
         return None
 
     try:
         synthesis_input = texttospeech.SynthesisInput(text=script_text)
 
+        # SELECTING THE TURKISH VOICE
+        # 'tr-TR-Wavenet-D' is a professional male voice. 
+        # Alternatives: 'tr-TR-Wavenet-A' (female), 'tr-TR-Wavenet-C' (female)
         voice = texttospeech.VoiceSelectionParams(
-            language_code="en-US",
-            name="en-US-Chirp3-HD-Iapetus" 
+            language_code="tr-TR",
+            name="tr-TR-Wavenet-D" 
         )
 
+        # DYNAMIC SPEED CONFIGURATION
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.1 
+            speaking_rate=speed  # Controlled via app.py slider
         )
 
         response = tts_client.synthesize_speech(
