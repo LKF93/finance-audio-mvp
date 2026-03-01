@@ -1,14 +1,14 @@
 import yfinance as yf
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from google.cloud import texttospeech
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from dotenv import load_dotenv
 
 # 1. Load Keys & Config
 load_dotenv()
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # Google Cloud Auth
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_credentials.json"
@@ -85,13 +85,8 @@ def get_financial_data(ticker_symbol):
         "52W Low": info.get('fiftyTwoWeekLow', 'N/A'),
     }
 
-    # News Headlines
-    news = ""
-    try:
-        for item in stock.news[:3]:
-            news += f"- {item.get('title')}\n"
-    except:
-        news = "No recent news found."
+   # Wir lassen yfinance News weg, wir nutzen Google Search wenn nötig
+    news = "News will be fetched via Google Search if required."
 
     # Data package for the prompt
     return f"""
@@ -112,61 +107,175 @@ def get_financial_data(ticker_symbol):
     {news}
     """
 
-def generate_psychological_script(data_context):
-    # Choose the model for text generation
-    model = genai.GenerativeModel('gemini-3-flash-preview') 
+def generate_psychological_script(data_context, focus_style, time_focus):
     
-    # --- SYSTEM PROMPT (Neutral & Clear) ---
-    prompt = f"""
+    use_search = False # Default value, so choosing "Overall Information" does not crash
+
+    # ---------------------------------------------------------
+    # TEIL 1: DEIN AUSFÜHRLICHER SYSTEM PROMPT (Wiederhergestellt)
+    # ---------------------------------------------------------
+    base_system_instructions = """
     You are a professional, objective financial news anchor.
-    Your tone is calm, factual, and precise. You do NOT give advice. You do NOT use hype.
+    Your tone is calm, factual, and precise. 
+    
+    CRITICAL FORMATTING RULES (MUST FOLLOW):
+    1. Write in PLAIN TEXT only. NO markdown, NO bold (**), NO code blocks.
+    2. Numbers: Read Market Cap naturally (e.g., "4.5 Trillion"). DO NOT read full digits string.
+    3. Currency: Always say "US Dollars" or "Euros", never "USD".
+    4. Structure: Write in full, spoken paragraphs. No bullet points.
+
+    STYLE RULES:
+    - Use short, simple sentences. Perfect for audio reading.
+    - No emotional words (like "unfortunately", "skyrocketed").
+    - Do not say "Buy" or "Sell".
+    - Speak slowly and clearly (use punctuation to create pauses).
+    """
+
+    # ---------------------------------------------------------
+    # TEIL 2: DEINE INHALTS-STRUKTUREN (Wiederhergestellt)
+    # ---------------------------------------------------------
+    
+    if "Technical" in focus_style:
+        mission_briefing = """
+        YOUR MISSION: CREATE A TECHNICAL ANALYSIS REPORT.
+        
+        STRUCTURE:
+        1. **Welcome**: Brief technical welcome ("Technical briefing for [Asset]").
+        2. **Price Action**: Focus heavily on exact price changes and percentages.
+        3. **Key Levels**: Mention 52-Week High/Low vs Current Price.
+        4. **Ratios**: Discuss P/E Ratio and Market Cap.
+        5. **Outlook**: Data-driven trend conclusion.
+        
+        NOTE: Ignore soft news headlines unless they explain a massive crash. Focus on math.
+        """
+        use_search = False
+        
+    elif "Sentimental" in focus_style:
+        # Hier habe ich nur EINE Zeile hinzugefügt: "USE GOOGLE SEARCH". 
+        # Sonst weiß dein alter Prompt nicht, dass er das neue Tool benutzen darf.
+        mission_briefing = """
+        YOUR MISSION: CREATE A MARKET SENTIMENT REPORT.
+        
+        CRITICAL INSTRUCTION: USE THE GOOGLE SEARCH TOOL to find the LATEST news (last 24-48h).
+        Do not rely on the provided data dossier for news.
+        
+        STRUCTURE:
+        1. **Welcome**: Brief sentiment welcome ("Market sentiment for [Asset]").
+        2. **The Story**: What is the breaking news found via Google Search? (e.g. Earnings, Politics, Product Launches).
+        3. **Context**: Explain company background and how news affects it.
+        4. **Price Reaction**: Briefly mention price reaction (up/down).
+        5. **Specific sector news**: Current sector news based on the company that are going on and are recent.
+        
+        NOTE: Minimize math. Focus on the "Why" and the narrative.
+        """
+        use_search = True
+        
+    else:
+        # Balanced / Default
+        mission_briefing = """
+        YOUR MISSION: CREATE A BALANCED DAILY BRIEFING.
+        
+        INSTRUCTION: Use Google Search to find 1 major headline to explain the price move.
+        
+        STRUCTURE:
+        1. **Welcome**: Standard welcome.
+        2. **Current Status**: Current price and context.
+        3. **The Big Picture**: Combine Technical Trend with Top News found via Search.
+        4. **Context**: Explain the movement briefly.
+        5. **Outlook**: Neutral summary.
+        
+        NOTE: Keep a 50/50 balance between price data and news context.
+        """
+
+        use_search = True
+    # ---------------------------------------------------------
+    # TEIL 3: DEINE ZEIT-STRUKTUREN (Wiederhergestellt)
+    # ---------------------------------------------------------
+    
+    if time_focus == "1 Day":
+        time_instruction = """
+        TIME CONTEXT: IMMEDIATE SHORT-TERM (Last 24 Hours).
+        - Focus ONLY on the 'Current Price' and today's movement.
+        - Ignore long-term trends unless extreme.
+        - Discuss immediate reaction to latest news.
+        """
+    elif time_focus == "1 Week":
+        time_instruction = """
+        TIME CONTEXT: WEEKLY WRAP-UP (Last 5 Days).
+        - Focus primarily on the '1-Week Change'.
+        - Summarize how the stock performed this week.
+        """
+    elif time_focus == "1 Month":
+        time_instruction = """
+        TIME CONTEXT: MONTHLY TREND.
+        - Focus on the '1-Month Change'. 
+        - Is the stock in an uptrend or downtrend over the last 30 days?
+        """
+    else: # 1 Year
+        time_instruction = """
+        TIME CONTEXT: LONG-TERM VIEW (Yearly Performance).
+        - Focus on the '1-Year Change' and the '52-Week Range'.
+        - Discuss the major trend of the year.
+        """
+
+    # ---------------------------------------------------------
+    # TEIL 4: ZUSAMMENBAU
+    # ---------------------------------------------------------
+    final_prompt = f"""
+    {base_system_instructions}
+    
+    {mission_briefing}
+    
+    {time_instruction}
     
     DATA DOSSIER:
     {data_context}
     
-    TASK: Write a structured market report (approximately 500 words) for audio reading.
-    
-    CRITICAL FORMATTING RULES:
-    1. Read Market Cap exactly as written in the dossier (e.g., "4.5 Trillion"). Do NOT read full digits.
-    2. Numbers: Read Market Cap exactly as written in the dossier (e.g., "4.5 Trillion"). Do NOT read full digits.
-    3. Write in PLAIN TEXT only. 
-    4. DO NOT use markdown formatting. 
-    5. DO NOT use bolding (**text**) or code blocks (`text`) for numbers. 
-    6. DO NOT use lists or bullet points. Write in full paragraphs.
-
-    STRUCTURE:
-    1. **Welcome**: Shortly welcome the user and say that this is todays financial audio for his or her portfolio.
-    2. **Current Status**: Start with the current price and the currency.
-    3. **Historical Context**: 
-       - Explicitly state the price changes. Example: "One month ago, the stock was trading at 80 USD, and has since risen to 100 USD, an increase of 25 percent."
-       - Cover the 1-week, 1-month, and 1-year trends clearly.
-    4. **News & Context**: Briefly mention relevant news or political factors affecting the asset based on the provided headlines.
-    5. **Financial Ratios**: Mention the P/E ratio and Market Cap neutrally.
-    6. **Outlook**: End with a cautious, data-backed trend observation (e.g., "The data suggests a consolidation phase..."). No wild predictions.
-    
-    STYLE RULES:
-    - Use short, simple sentences.
-    - Avoid complex jargon.
-    - No emotional words (like "unfortunately", "surprisingly", "skyrocketed"). Use "increased", "decreased", "remained stable".
-    - Do not say "Buy" or "Sell".
-    - Speak slowly and clearly (use punctuation to create pauses).
+    TASK: Write a 200-word audio script integrating ALL instructions above.
     """
     
-    # Safety Settings (so LLM doesnt stop when political context appears)
-    safety_settings = {
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    }
-    
     try:
-        response = model.generate_content(prompt, safety_settings=safety_settings)
-        if response.parts:
+        # Tool Konfiguration (Neue Syntax)
+        if use_search:
+            tools_config = [types.Tool(google_search=types.GoogleSearch())]
+        else:
+            tools_config = None
+
+        # API Aufruf
+        response = client.models.generate_content(
+            model='gemini-3-flash-preview',
+            contents=final_prompt,
+            config=types.GenerateContentConfig(
+                temperature = 0.5,
+                tools=tools_config,
+                safety_settings=[
+                    types.SafetySetting(
+                        category='HARM_CATEGORY_HARASSMENT',
+                        threshold='BLOCK_NONE'
+                    ),
+                    types.SafetySetting(
+                        category='HARM_CATEGORY_HATE_SPEECH',
+                        threshold='BLOCK_NONE'
+                    ),
+                    types.SafetySetting(
+                        category='HARM_CATEGORY_SEXUALLY_EXPLICIT',
+                        threshold='BLOCK_NONE'
+                    ),
+                    types.SafetySetting(
+                        category='HARM_CATEGORY_DANGEROUS_CONTENT',
+                        threshold='BLOCK_NONE'
+                    )
+                ]
+            )
+        )
+        
+        if response.text:
             return response.text
-        return "Data analysis currently unavailable."
+        return "Analysis unavailable."
+        
     except Exception as e:
-        return f"Error: {e}"
+        print(f"Gemini Error: {e}")
+        return f"Error generating text: {e}"
 
 def text_to_speech(script_text):
     if not script_text or "Error" in script_text:
@@ -175,22 +284,14 @@ def text_to_speech(script_text):
     try:
         synthesis_input = texttospeech.SynthesisInput(text=script_text)
 
-        # HIER IST DER WECHSEL AUF DAS BESTE MODELL:
-        # We use the model "Chirp 3 HD". 
-        # Der Name der Stimme sagt Google automatisch, dass es das teure, gute Modell nutzen soll.
         voice = texttospeech.VoiceSelectionParams(
             language_code="en-US",
-            name="en-US-Chirp3-HD-Puck"  # Fenrir = Tief, seriös, männlich
-            # Alternativen: 
-            # "en-US-Chirp3-HD-Puck" (Männlich, etwas weicher)
-            # "en-US-Chirp3-HD-Kore" (Weiblich, sehr klar)
+            name="en-US-Chirp3-HD-Iapetus" 
         )
 
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
-            # WICHTIG BEI CHIRP: Lass die Geschwindigkeit auf 1.0.
-            # Chirp macht Pausen automatisch sehr natürlich. Wenn wir hier drehen, klingt es künstlich.
-            speaking_rate=1.0 
+            speaking_rate=1.1 
         )
 
         response = tts_client.synthesize_speech(
