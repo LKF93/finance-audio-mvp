@@ -154,19 +154,21 @@ def generate_psychological_script(data_context, focus_style, time_focus):
         # Hier habe ich nur EINE Zeile hinzugefügt: "USE GOOGLE SEARCH". 
         # Sonst weiß dein alter Prompt nicht, dass er das neue Tool benutzen darf.
         mission_briefing = """
-        YOUR MISSION: CREATE A MARKET SENTIMENT REPORT.
+        YOUR MISSION: ACT AS A FINANCIAL JOURNALIST, NOT AN ANALYST.
         
-        CRITICAL INSTRUCTION: USE THE GOOGLE SEARCH TOOL to find the LATEST news (last 24-48h).
-        Do not rely on the provided data dossier for news.
+        CRITICAL RULES FOR SENTIMENT MODE:
+        1. NO LISTING OF RATIOS: Do NOT mention Market Cap, P/E Ratio, or 52-Week Highs. They are forbidden in this mode.
+        2. GOOGLE SEARCH IS PRIMARY: 90% of your script must come from Google Search results about news, politics, and sector trends.
+        3. THE 'WHY' ONLY: Explain the mood of the market. Is there geopolitical tension? A new government regulation? A strategic merger?
+        4. PRICE AS A FOOTNOTE: You may only mention the 'Current Price' ONCE at the very end. Do NOT mention percentage changes for 1-week or 1-month.
         
         STRUCTURE:
-        1. **Welcome**: Brief sentiment welcome ("Market sentiment for [Asset]").
-        2. **The Story**: What is the breaking news found via Google Search? (e.g. Earnings, Politics, Product Launches).
-        3. **Context**: Explain company background and how news affects it.
-        4. **Price Reaction**: Briefly mention price reaction (up/down).
-        5. **Specific sector news**: Current sector news based on the company that are going on and are recent.
+        1. **Headline News**: Start with the biggest recent story found via Search.
+        2. **The Narrative**: Explain how politics, innovation, or deals are shaping the company's future.
+        3. **Sector Mood**: What is happening in the broader industry (e.g., Energy, Tech)?
+        4. **Closing**: One-sentence mention of the current price and a final sentiment outlook.
         
-        NOTE: Minimize math. Focus on the "Why" and the narrative.
+        NOTE: Use descriptive language (e.g., "Investors are cautious", "Optimism is rising") instead of mathematical data.
         """
         use_search = True
         
@@ -277,7 +279,7 @@ def generate_psychological_script(data_context, focus_style, time_focus):
         print(f"Gemini Error: {e}")
         return f"Error generating text: {e}"
 
-def text_to_speech(script_text):
+def text_to_speech(script_text, speed=1.0):
     if not script_text or "Error" in script_text:
         return None
 
@@ -291,7 +293,7 @@ def text_to_speech(script_text):
 
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.1 
+            speaking_rate=speed 
         )
 
         response = tts_client.synthesize_speech(
